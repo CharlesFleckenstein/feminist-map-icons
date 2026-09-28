@@ -22,6 +22,8 @@ This repo is a place to store, browse, upload, and manage map icons. The website
 | Path | Purpose |
 |------|---------|
 | `backend/` | Django API and admin |
+| `backend/data/` | Shared icon metadata CSV (safe to commit) |
+| `backend/media/` | Local PNG/SVG files after import (do **not** commit) |
 | `frontend/` | React app |
 
 ## Prerequisites
@@ -78,7 +80,46 @@ python manage.py migrate
 python manage.py runserver
 ```
 
-Will be at [http://127.0.0.1:8000/].
+The API will be at [http://127.0.0.1:8000/](http://127.0.0.1:8000/).
+
+## Import existing icons (one-time)
+
+### 1. Metadata CSV (already in the repo)
+
+```text
+backend/data/map-icon-metadata.csv
+```
+
+### 2. Download PNG and SVG folders
+
+Get the icon folders from the Zenodo export [https://zenodo.org/records/22134192]. You need two folders of files named by `unique-ID`, for example:
+
+- `map-icon-png/` → `00e8059e.png`, `021fd014.png`, …
+- `map-icon-svg/` → `00e8059e.svg`, `021fd014.svg`, …
+
+Put them anywhere on your computer (Downloads is fine).
+
+### 3. Run the import
+
+From `backend/` with your venv active:
+
+**Windows (PowerShell):**
+
+```powershell
+python manage.py import_icons --csv data/map-icon-metadata.csv --png "C:\Users\YOUR_NAME\Downloads\map-icon-png" --svg "C:\Users\YOUR_NAME\Downloads\map-icon-svg"
+```
+
+**macOS / Linux:**
+
+```bash
+python manage.py import_icons --csv data/map-icon-metadata.csv --png ~/Downloads/map-icon-png --svg ~/Downloads/map-icon-svg
+```
+
+You should see something like `Created 209` .
+
+### 4. Check
+
+[http://127.0.0.1:8000/api/icons/](http://127.0.0.1:8000/api/icons/).
 
 ## Frontend setup
 
@@ -102,6 +143,6 @@ Keep Django running on port 8000 in another terminal so API and media requests w
 
 ## Notes
 
-- Icon metadata will live in PostgreSQL; PNG/SVG files under `backend/media/` (later).
-- Prefer not committing large icon files under `media/`.
+- Metadata lives in PostgreSQL; PNG/SVG files live under `backend/media/` (paths stored on each Icon).
+- Do **not** commit `backend/media/` or large icon zips — use the import command instead.
 - Frontend calls should use paths like `/api/...` so the Vite proxy can forward them to Django.
