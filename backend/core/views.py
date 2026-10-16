@@ -1,8 +1,9 @@
 from django.db.models import Q
 from rest_framework import status as http_status
 from rest_framework import viewsets
-from rest_framework.decorators import action, api_view
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from .models import Icon
 from .permissions import IsContributorOrReadOnly, IsOwnerOrModerator, IsReviewer
@@ -11,7 +12,10 @@ from .serializers import IconSerializer, IconStatusSerializer
 
 
 # Simple check: "Is the API running?"
+# Says AllowAny out loud because the project default now demands a login: a liveness probe
+# that needs credentials is no use to a monitor or a load balancer.
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def health(request):
     return Response({"status": "ok"})
 

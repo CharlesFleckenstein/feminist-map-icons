@@ -10,6 +10,7 @@ from django.test import TestCase
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
 from rest_framework.views import APIView
@@ -412,35 +413,54 @@ class RoleTests(APITestCase):
         self.assertFalse(self.moderator.has_perm("auth.change_user"))
         self.assertFalse(self.contributor.has_perm("auth.change_user"))
 
-    # A new endpoint that forgets permission_classes must reject writes from an account
-    # with no role, so the project-wide default has to be the role check rather than DRF's
-    # login check. Asserting which class is attached is not enough -- that would pass even
-    # if the class allowed everything -- so check what it actually decides.
-    def test_a_view_declaring_nothing_inherits_the_role_check(self):
+    # An endpoint that forgets permission_classes must need a login for every action and a
+    # role to write. Asserting which classes are attached is not enough -- that would pass
+    # even if they allowed everything -- so check what the pair actually decides.
+    def test_a_view_declaring_nothing_requires_a_login_and_a_role_to_write(self):
         class Bare(APIView):
             pass
 
+        view = Bare()
         self.assertEqual(
-            [type(perm) for perm in Bare().get_permissions()],
-            [IsContributorOrReadOnly],
+            [type(perm) for perm in view.get_permissions()],
+            [IsAuthenticated, IsContributorOrReadOnly],
         )
 
-        permission = IsContributorOrReadOnly()
         factory = APIRequestFactory()
 
         def allows(method, user):
             request = Request(getattr(factory, method)("/anything"))
             request.user = user
-            return permission.has_permission(request, Bare())
+            # Every class has to pass, which is what makes the pair stricter than either.
+            return all(
+                perm.has_permission(request, view) for perm in view.get_permissions()
+            )
 
-        for user in (AnonymousUser(), self.no_role):
-            self.assertFalse(allows("post", user))
-            self.assertFalse(allows("delete", user))
+        # Anonymous gets nothing at all, reads included.
+        self.assertFalse(allows("get", AnonymousUser()))
+        self.assertFalse(allows("post", AnonymousUser()))
+
+        # Signed in but in no group: a visitor who logged in, so read-only.
+        self.assertTrue(allows("get", self.no_role))
+        self.assertFalse(allows("post", self.no_role))
+        self.assertFalse(allows("delete", self.no_role))
+
+        # A role is what buys writes.
         self.assertTrue(allows("post", self.contributor))
 
-        # Reads stay public by design, which is why the default is not a substitute for a
-        # view over non-public data declaring its own permission_classes.
-        self.assertTrue(allows("get", AnonymousUser()))
+    # The default demands a login, so anything meant to stay public has to say so itself.
+    def test_health_stays_public_despite_the_login_default(self):
+        self.client.force_authenticate(None)
+        self.assertEqual(
+            self.client.get("/api/health/").status_code, status.HTTP_200_OK
+        )
+
+    # The icon endpoints declare their own classes, so the stricter default must not have
+    # closed public browsing of the published library.
+    def test_published_icons_are_still_readable_anonymously(self):
+        self.client.force_authenticate(None)
+        response = self.client.get(reverse("icon-list"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     # --- upload is a role, not just a login ----------------------------------------
 
