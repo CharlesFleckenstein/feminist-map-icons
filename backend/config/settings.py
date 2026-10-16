@@ -151,7 +151,13 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.TokenAuthentication",
         "rest_framework.authentication.SessionAuthentication",  # useful for /admin and browsable API
     ],
+    # Role-based rather than login-based, so an endpoint that forgets permission_classes
+    # rejects writes from accounts with no role instead of accepting them. Note it is only
+    # writes: the class allows every safe method before checking anything, so a forgotten
+    # declaration still leaves reads public -- fine for this library, but a future endpoint
+    # over non-public data needs its own permission_classes, not this default.
+    # Removing the key would be worse than a loose value: DRF's own default is AllowAny.
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticatedOrReadOnly",
+        "core.permissions.IsContributorOrReadOnly",
     ],
 }

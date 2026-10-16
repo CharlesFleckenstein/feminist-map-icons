@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 # Create your models here.
@@ -46,6 +47,16 @@ class Icon(models.Model):
 
     png_file = models.FileField(upload_to="icons/png/", blank=True, null=True)
     svg_file = models.FileField(upload_to="icons/svg/", blank=True, null=True)
+
+    # Who uploaded this icon. Null for rows loaded by import_icons (they predate
+    # accounts), so those are moderator-only to edit: there is no owner to match.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="icons",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
