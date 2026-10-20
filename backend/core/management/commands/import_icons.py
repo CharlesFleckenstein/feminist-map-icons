@@ -68,12 +68,15 @@ class Command(BaseCommand):
                     "icon_context": (row.get("icon-context") or "").strip(),
                     "creation_context": (row.get("creation-context") or "").strip(),
                     "notes": (row.get("notes") or "").strip(),
-                    "status": Icon.Status.PUBLISHED,
                 }
 
+                # status is set on first import only. In defaults it was reapplied on the
+                # update path too, so every re-import republished the whole table and
+                # silently undid reviews (a rejected icon came back published).
                 icon, was_created = Icon.objects.update_or_create(
                     unique_id=unique_id,
                     defaults=defaults,
+                    create_defaults={**defaults, "status": Icon.Status.PUBLISHED},
                 )
                 created += int(was_created)
                 updated += int(not was_created)

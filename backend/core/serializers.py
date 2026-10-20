@@ -19,6 +19,8 @@ class IconSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False,
     )
+    # When reading: the uploader's username, or null for imported rows.
+    created_by = serializers.StringRelatedField(read_only=True)
 
     class Meta:
         model = Icon
@@ -41,10 +43,13 @@ class IconSerializer(serializers.ModelSerializer):
             "status",
             "png_file",
             "svg_file",
+            "created_by",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        # status is read-only on purpose: a check only in create() is one PATCH away
+        # from being skipped. It moves through the submit/review actions instead.
+        read_only_fields = ["status", "created_at", "updated_at"]
 
     # Find or create Tag rows, then link them to this icon (replaces old secondary tags)
     def _set_tags(self, icon, tag_names):
@@ -62,8 +67,8 @@ class IconSerializer(serializers.ModelSerializer):
     # POST: create a new icon
     def create(self, validated_data):
         tag_names = validated_data.pop("tag_names", None)
-        # New uploads always start as pending (waiting for review)
-        validated_data["status"] = Icon.Status.PENDING
+        # New uploads still start as pending (waiting for review); that is the model
+        # default now that status is read-only here.
         icon = Icon.objects.create(**validated_data)
         self._set_tags(icon, tag_names)
         return icon
@@ -74,3 +79,8 @@ class IconSerializer(serializers.ModelSerializer):
         icon = super().update(instance, validated_data)
         self._set_tags(icon, tag_names)
         return icon
+
+
+# Body of POST /api/icons/<unique_id>/review/
+class IconStatusSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=Icon.Status.choices)
