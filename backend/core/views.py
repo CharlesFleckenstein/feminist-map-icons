@@ -69,6 +69,7 @@ class IconViewSet(viewsets.ModelViewSet):
                 | Q(tags__name__icontains=q)
                 | Q(icon_description__icontains=q)
                 | Q(designer__icontains=q)
+                | Q(uploader__icontains=q)
                 | Q(icon_geography__icontains=q)
                 | Q(where_created__icontains=q)
                 | Q(unique_id__icontains=q)
