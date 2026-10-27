@@ -121,6 +121,19 @@ You should see something like `Created 209` .
 
 [http://127.0.0.1:8000/api/icons/](http://127.0.0.1:8000/api/icons/).
 
+## Roles and contributor access
+
+After `migrate`, Django has three groups: **Contributor**, **Moderator**, and **Admin**. A signed-in user with no group can browse published icons but cannot upload.
+
+To approve someone as a contributor (library admins only):
+
+1. Open [http://127.0.0.1:8000/admin/](http://127.0.0.1:8000/admin/) and sign in as an Admin or superuser.
+2. Go to **Users**, select one or more accounts.
+3. Choose **Grant contributor access (may upload icons)** from the action menu, then **Go**.
+4. Use **Revoke contributor access** the same way to remove upload rights.
+
+Do not use the full user edit form just to approve contributors. That form can also grant superuser and bypass publish rules. Full role rules: `docs/permissions.md`.
+
 ## Frontend setup
 
 Requires Node.js 18+. The Vite proxy is already configured so `/api` and `/media` go to Django on port 8000.
