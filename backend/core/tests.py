@@ -2,8 +2,10 @@ import tempfile
 from io import StringIO
 from pathlib import Path
 
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser, Group
+from django.contrib.messages import get_messages
 from django.core.management import call_command
 from django.urls import reverse as django_reverse
 from django.test import TestCase
@@ -12,9 +14,11 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
+from rest_framework.test import APIClient
 from rest_framework.test import APIRequestFactory
 from rest_framework.views import APIView
 
+from .admin import UserAdmin
 from .models import Icon, Tag
 from .permissions import IsContributorOrReadOnly
 from .roles import ADMIN, CONTRIBUTOR, MODERATOR, ROLE_PERMISSIONS
@@ -724,3 +728,115 @@ class AdminSideDoorTests(TestCase):
         self.post_change(self.admin, icon, status=Icon.Status.PUBLISHED)
         icon.refresh_from_db()
         self.assertEqual(icon.status, Icon.Status.PUBLISHED)
+
+
+class ContributorApprovalTests(TestCase):
+    """Issue #15: granting upload rights must not go through Django's user form, which
+    also edits is_superuser and groups and so can hand over the publish right."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = in_role(
+            User.objects.create_user("approver", password="pw", is_staff=True), ADMIN
+        )
+        cls.moderator = in_role(
+            User.objects.create_user("reviewer", password="pw", is_staff=True), MODERATOR
+        )
+        cls.applicant = User.objects.create_user("applicant", password="pw")
+
+    def run_action(self, actor, action, *targets):
+        self.client.force_login(actor)
+        return self.client.post(
+            django_reverse("admin:auth_user_changelist"),
+            {
+                "action": action,
+                "index": 0,
+                "_selected_action": [str(user.pk) for user in targets],
+            },
+        )
+
+    def offered_actions(self, user):
+        request = APIRequestFactory().get("/admin/auth/user/")
+        request.user = user
+        return set(UserAdmin(User, admin.site).get_actions(request))
+
+    def can_upload(self, user, unique_id):
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.post(
+            reverse("icon-list"), {"unique_id": unique_id}, format="json"
+        )
+        return response.status_code == status.HTTP_201_CREATED
+
+    # --- the done criteria ----------------------------------------------------------
+
+    def test_an_admin_can_grant_contributor_access_and_the_user_can_then_upload(self):
+        self.assertFalse(self.can_upload(self.applicant, "pre1"))
+        self.run_action(self.admin, "grant_contributor_access", self.applicant)
+        self.assertTrue(self.can_upload(self.applicant, "post1"))
+
+    # The reason the action exists instead of auth.change_user: the user form could do
+    # both of these, so assert the action leaves everything but one group alone.
+    def test_the_action_cannot_grant_superuser_staff_or_any_other_role(self):
+        self.run_action(self.admin, "grant_contributor_access", self.applicant)
+        self.applicant.refresh_from_db()
+        self.assertFalse(self.applicant.is_superuser)
+        self.assertFalse(self.applicant.is_staff)
+        self.assertEqual(
+            set(self.applicant.groups.values_list("name", flat=True)), {CONTRIBUTOR}
+        )
+        self.assertEqual(self.applicant.user_permissions.count(), 0)
+
+    def test_revoking_contributor_access_takes_upload_back(self):
+        self.run_action(self.admin, "grant_contributor_access", self.applicant)
+        self.run_action(self.admin, "revoke_contributor_access", self.applicant)
+        self.assertFalse(self.applicant.groups.filter(name=CONTRIBUTOR).exists())
+        self.assertFalse(self.can_upload(self.applicant, "post2"))
+
+    # Revoke must not quietly strip the other roles off a moderator or admin who also
+    # happens to sit in Contributor.
+    def test_revoking_leaves_a_users_other_roles_in_place(self):
+        in_role(self.moderator, CONTRIBUTOR)
+        self.run_action(self.admin, "revoke_contributor_access", self.moderator)
+        self.assertEqual(
+            set(self.moderator.groups.values_list("name", flat=True)), {MODERATOR}
+        )
+
+    # --- who gets the actions -------------------------------------------------------
+
+    def test_a_library_admin_is_offered_both_actions(self):
+        self.assertLessEqual(
+            {"grant_contributor_access", "revoke_contributor_access"},
+            self.offered_actions(self.admin),
+        )
+
+    # Moderators are the role the matrix would like to do this, but the website approval
+    # page comes later -- until then they must not reach it through the admin at all.
+    def test_a_moderator_is_not_offered_the_actions_and_cannot_post_one(self):
+        self.assertEqual(
+            {"grant_contributor_access", "revoke_contributor_access"}
+            & self.offered_actions(self.moderator),
+            set(),
+        )
+        self.run_action(self.moderator, "grant_contributor_access", self.applicant)
+        self.assertFalse(self.applicant.groups.exists())
+
+    # The changelist is the only way in, and reaching it needs auth.view_user, which
+    # only the Admin group holds. Belt and braces with the get_actions gate above.
+    def test_the_user_changelist_is_closed_to_moderators(self):
+        self.client.force_login(self.moderator)
+        response = self.client.get(django_reverse("admin:auth_user_changelist"))
+        self.assertEqual(response.status_code, 403)  # staff, but no auth.view_user
+
+    # --- bulk and no-op behaviour ---------------------------------------------------
+
+    def test_granting_is_idempotent_and_reports_only_real_changes(self):
+        already = in_role(User.objects.create_user("veteran", password="pw"), CONTRIBUTOR)
+        response = self.run_action(
+            self.admin, "grant_contributor_access", already, self.applicant
+        )
+        messages = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertEqual(messages, ["applicant can now upload icons."])
+        self.assertEqual(
+            already.groups.filter(name=CONTRIBUTOR).count(), 1
+        )  # not doubled

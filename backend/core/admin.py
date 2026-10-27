@@ -1,6 +1,9 @@
 from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django.contrib.auth.models import Group, User
+
 from .models import Icon, Tag
-from .roles import is_admin
+from .roles import CONTRIBUTOR, is_admin
 
 
 @admin.register(Tag)
@@ -34,3 +37,55 @@ class IconAdmin(admin.ModelAdmin):
         if not change and not is_admin(request.user):
             obj.status = Icon.Status.PENDING
         super().save_model(request, obj, form, change)
+
+
+# Approving a contributor account through Django's user form means handing out
+# auth.change_user, and that form also edits is_superuser, groups and user_permissions --
+# one mis-click away from granting the publish right only Admins are meant to hold, or a
+# superuser who bypasses every check in roles.py. These two actions can add or remove one
+# group and nothing else, so the worst they can do is what they say on the tin.
+admin.site.unregister(User)
+
+
+@admin.register(User)
+class UserAdmin(DjangoUserAdmin):
+    actions = ("grant_contributor_access", "revoke_contributor_access")
+
+    # Gated on our own role check rather than Django's "change" permission, which is the
+    # auth.change_user these actions exist to avoid needing. An action the check rejects
+    # is dropped from get_actions(), and response_action() resolves a posted action name
+    # against that same dict, so hand-posting the name gets nowhere either.
+    def has_manage_contributors_permission(self, request):
+        return is_admin(request.user)
+
+    @admin.action(
+        permissions=["manage_contributors"],
+        description="Grant contributor access (may upload icons)",
+    )
+    def grant_contributor_access(self, request, queryset):
+        self._set_contributor_access(request, queryset, grant=True)
+
+    @admin.action(
+        permissions=["manage_contributors"],
+        description="Revoke contributor access",
+    )
+    def revoke_contributor_access(self, request, queryset):
+        self._set_contributor_access(request, queryset, grant=False)
+
+    def _set_contributor_access(self, request, queryset, grant):
+        group = Group.objects.get(name=CONTRIBUTOR)
+        # Narrow to the rows the action actually changes, so selecting ten users who are
+        # already contributors reports nothing rather than claiming ten approvals.
+        if grant:
+            changed = list(queryset.exclude(groups=group))
+            group.user_set.add(*changed)
+        else:
+            changed = list(queryset.filter(groups=group))
+            group.user_set.remove(*changed)
+
+        if not changed:
+            self.message_user(request, "No accounts needed that change.")
+            return
+        verb = "can now upload icons" if grant else "can no longer upload icons"
+        names = ", ".join(sorted(user.get_username() for user in changed))
+        self.message_user(request, f"{names} {verb}.")
