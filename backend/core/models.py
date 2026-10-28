@@ -1,6 +1,12 @@
 from django.conf import settings
 from django.db import models
 
+from .validators import (
+    validate_icon_file_size,
+    validate_png_file,
+    validate_svg_file,
+)
+
 # Create your models here.
 
 class Tag(models.Model):
@@ -45,8 +51,21 @@ class Icon(models.Model):
         default=Status.PENDING,
     )
 
-    png_file = models.FileField(upload_to="icons/png/", blank=True, null=True)
-    svg_file = models.FileField(upload_to="icons/svg/", blank=True, null=True)
+    # Uploads are checked for type and size on the way in; see core/validators.py.
+    # Rows created by import_icons skip this -- Model.save() does not run validators,
+    # and those files are already on disk.
+    png_file = models.FileField(
+        upload_to="icons/png/",
+        blank=True,
+        null=True,
+        validators=[validate_png_file, validate_icon_file_size],
+    )
+    svg_file = models.FileField(
+        upload_to="icons/svg/",
+        blank=True,
+        null=True,
+        validators=[validate_svg_file, validate_icon_file_size],
+    )
 
     # Who uploaded this icon. Null for rows loaded by import_icons (they predate
     # accounts), so those are moderator-only to edit: there is no owner to match.

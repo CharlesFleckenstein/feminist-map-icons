@@ -1,14 +1,18 @@
+import struct
 import tempfile
+import zlib
 from io import StringIO
 from pathlib import Path
 
+from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser, Group
 from django.contrib.messages import get_messages
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.urls import reverse as django_reverse
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -22,6 +26,7 @@ from .admin import UserAdmin
 from .models import Icon, Tag
 from .permissions import IsContributorOrReadOnly
 from .roles import ADMIN, CONTRIBUTOR, MODERATOR, ROLE_PERMISSIONS
+from .validators import MAX_ICON_FILE_SIZE
 
 User = get_user_model()
 
@@ -840,3 +845,208 @@ class ContributorApprovalTests(TestCase):
         self.assertEqual(
             already.groups.filter(name=CONTRIBUTOR).count(), 1
         )  # not doubled
+
+
+def minimal_png():
+    """A real 1x1 PNG, built here so the bytes in these tests are honest ones."""
+
+    def chunk(kind, payload):
+        body = kind + payload
+        return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body))
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)  # 1x1, 8-bit greyscale
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+        + chunk(b"IEND", b"")
+    )
+
+
+MINIMAL_SVG = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n'
+    b'<!-- a feminist map icon -->\n'
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect width="1" height="1"/></svg>'
+)
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp(prefix="icon-upload-tests-"))
+class IconUploadValidationTests(APITestCase):
+    """Issue #16: the API does not trust what a contributor attaches."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.author = in_role(User.objects.create_user("uploader", password="pw"), CONTRIBUTOR)
+
+    def setUp(self):
+        self.client.force_authenticate(self.author)
+
+    def upload(self, **files):
+        return self.client.post(
+            reverse("icon-list"),
+            {"unique_id": "upload1", **files},
+            format="multipart",
+        )
+
+    def media_files(self):
+        root = Path(settings.MEDIA_ROOT)
+        return sorted(p.name for p in root.rglob("*") if p.is_file())
+
+    # --- the happy path -------------------------------------------------------------
+
+    def test_a_real_png_and_svg_are_accepted(self):
+        response = self.upload(
+            png_file=SimpleUploadedFile("icon.png", minimal_png(), content_type="image/png"),
+            svg_file=SimpleUploadedFile("icon.svg", MINIMAL_SVG, content_type="image/svg+xml"),
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        icon = Icon.objects.get(unique_id="upload1")
+        self.assertTrue(icon.png_file)
+        self.assertTrue(icon.svg_file)
+
+    def test_an_svg_opening_straight_with_the_root_element_is_accepted(self):
+        """No XML declaration, no comment -- still a valid SVG."""
+        response = self.upload(
+            svg_file=SimpleUploadedFile(
+                "icon.svg", b'<svg xmlns="http://www.w3.org/2000/svg"/>', content_type="image/svg+xml"
+            )
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_an_svg_with_a_multibyte_character_on_the_read_boundary_is_accepted(self):
+        """The type check reads a fixed number of bytes; the cut can land mid-character."""
+        prefix = b'<svg xmlns="http://www.w3.org/2000/svg"><title>'
+        head = prefix + b"a" * (4095 - len(prefix))  # em dash straddles byte 4096
+        svg = head + "\u2014".encode() + b"</title></svg>"
+        response = self.upload(
+            svg_file=SimpleUploadedFile("boundary.svg", svg, content_type="image/svg+xml")
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_an_svg_with_invalid_utf8_bytes_is_still_rejected(self):
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg"><title>\xff\xfe</title></svg>'
+        response = self.upload(
+            svg_file=SimpleUploadedFile("broken.svg", svg, content_type="image/svg+xml")
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("svg_file", response.data)
+
+    # --- the extension is not enough -----------------------------------------------
+
+    def test_a_png_renamed_as_svg_is_rejected(self):
+        response = self.upload(
+            svg_file=SimpleUploadedFile("icon.svg", minimal_png(), content_type="image/svg+xml")
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("svg_file", response.data)
+
+    def test_text_renamed_as_png_is_rejected(self):
+        response = self.upload(
+            png_file=SimpleUploadedFile("icon.png", b"not a png at all", content_type="image/png")
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("png_file", response.data)
+
+    def test_an_html_page_claiming_to_be_an_svg_is_rejected(self):
+        response = self.upload(
+            svg_file=SimpleUploadedFile(
+                "icon.svg", b"<html><body><svg/></body></html>", content_type="image/svg+xml"
+            )
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("svg_file", response.data)
+
+    # --- the wrong format entirely --------------------------------------------------
+
+    def test_a_jpeg_is_rejected(self):
+        response = self.upload(
+            png_file=SimpleUploadedFile(
+                "icon.jpg", b"\xff\xd8\xff\xe0" + b"\x00" * 64, content_type="image/jpeg"
+            )
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("png_file", response.data)
+
+    def test_a_gif_renamed_as_png_is_rejected(self):
+        response = self.upload(
+            png_file=SimpleUploadedFile("icon.png", b"GIF89a" + b"\x00" * 64, content_type="image/png")
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("png_file", response.data)
+
+    # --- the size limit -------------------------------------------------------------
+
+    def test_a_png_over_the_size_limit_is_rejected(self):
+        oversize = minimal_png() + b"\x00" * MAX_ICON_FILE_SIZE
+        response = self.upload(
+            png_file=SimpleUploadedFile("icon.png", oversize, content_type="image/png")
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("png_file", response.data)
+
+    def test_an_svg_over_the_size_limit_is_rejected(self):
+        oversize = MINIMAL_SVG + b"<!--" + b"x" * MAX_ICON_FILE_SIZE + b"-->"
+        response = self.upload(
+            svg_file=SimpleUploadedFile("icon.svg", oversize, content_type="image/svg+xml")
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("svg_file", response.data)
+
+    def test_a_png_exactly_at_the_size_limit_is_accepted(self):
+        png = minimal_png()
+        padded = png + b"\x00" * (MAX_ICON_FILE_SIZE - len(png))
+        response = self.upload(
+            png_file=SimpleUploadedFile("icon.png", padded, content_type="image/png")
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    # --- replacing a file is an upload too ------------------------------------------
+
+    def test_swapping_in_a_bad_file_on_patch_is_rejected(self):
+        """The check is on the field, so it covers a replacement, not just a create."""
+        self.upload(
+            png_file=SimpleUploadedFile("icon.png", minimal_png(), content_type="image/png")
+        )
+        original = Icon.objects.get(unique_id="upload1").png_file.name
+        response = self.client.patch(
+            icon_url("upload1"),
+            {"png_file": SimpleUploadedFile("swap.png", b"nope", content_type="image/png")},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Icon.objects.get(unique_id="upload1").png_file.name, original)
+
+    def test_patching_other_fields_does_not_recheck_the_stored_file(self):
+        """An untouched file is not re-read, so a missing media file cannot block an edit."""
+        icon = Icon.objects.create(
+            unique_id="upload1", png_file="icons/png/not-on-disk.png", created_by=self.author
+        )
+        response = self.client.patch(
+            icon_url("upload1"), {"primary_tag": "bench"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        icon.refresh_from_db()
+        self.assertEqual(icon.png_file.name, "icons/png/not-on-disk.png")
+
+    # --- nothing rejected reaches the disk ------------------------------------------
+
+    def test_a_rejected_upload_writes_nothing_under_media(self):
+        before = self.media_files()
+        response = self.upload(
+            png_file=SimpleUploadedFile("evil.png", b"<?php ?>", content_type="image/png")
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.media_files(), before)
+        self.assertFalse(Icon.objects.filter(unique_id="upload1").exists())
+
+    # --- the files already on disk are left alone -----------------------------------
+
+    def test_import_icons_rows_are_not_revalidated(self):
+        """Model.save() does not run validators, so imported paths stay as they are."""
+        icon = Icon.objects.create(
+            unique_id="imported1",
+            png_file="icons/png/imported1.png",
+            svg_file="icons/svg/imported1.svg",
+        )
+        icon.refresh_from_db()
+        self.assertEqual(icon.png_file.name, "icons/png/imported1.png")
