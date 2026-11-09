@@ -15,7 +15,19 @@ const ABOUT_CARDS = [
   },
   {
     title: 'Download and Install',
-    body: 'Install the plugin from the QGIS Plugin Repository, or manually with zip files available on GitHub.',
+    body: (
+      <>
+        Install the plugin from the{' '}
+        <a
+          href="https://plugins.qgis.org/plugins/galleryofpossibilities/"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          QGIS Plugin Repository
+        </a>
+        , or manually with zip files available on GitHub.
+      </>
+    ),
   },
   {
     title: 'File Formats',
@@ -164,6 +176,14 @@ export default function HomePage() {
           }}>
             Search
           </a>
+          <a
+            className="btn"
+            href="https://plugins.qgis.org/plugins/galleryofpossibilities/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            QGIS Plugin
+          </a>
           <Link className="btn" to="/resources">
             Resources
           </Link>
@@ -178,125 +198,134 @@ export default function HomePage() {
         />
       </section>
 
-      <section className="intro-band">
-        <div className="wrap intro-band__inner">
-          <img src={logo} alt="" width={56} height={56} />
-          <div>
-            <h2>Gallery of Possibilities</h2>
-            <p>
-              The galleryofpossibilities is a feminist mapping tool and an
-              alternative map icon library, grounded in feminist thought and
-              practice that can be integrated into QGIS, an open-source mapping
-              platform, and cartography more broadly.
-            </p>
-            <a
-              className="btn"
-              href="#gallery"
-              onClick={(event) => {
-                event.preventDefault()
-                scrollToGallery()
-              }}
-            >
-              Search icons
-            </a>
-          </div>
-        </div>
-      </section>
-
       <section
         id="gallery"
-        className="home-gallery wrap"
+        className="gallery"
         aria-labelledby="home-gallery-heading"
       >
-        <h2 id="home-gallery-heading">Browse the library</h2>
-        <div className="gallery-controls">
-          <label className="sr-only" htmlFor="gallery-search">
-            Search icons
-          </label>
-          <input
-            id="gallery-search"
-            className="gallery-search"
-            type="search"
-            placeholder="Search by tags, geography, or designer…"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
+        <div className="wrap gallery__inner">
+          <img
+            className="gallery__logo"
+            src={logo}
+            alt=""
+            width={80}
+            height={80}
           />
-          <div className="format-toggle" role="group" aria-label="Icon format">
-            {['png', 'svg'].map((value) => (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={format === value}
-                onClick={() => setFormat(value)}
-              >
-                {value.toUpperCase()}
-              </button>
-            ))}
+          <h2 id="home-gallery-heading">Gallery of Possibilities</h2>
+          <p className="gallery__intro">
+            The <i>galleryofpossibilities</i> is a feminist mapping tool and an
+            alternative map icon library, grounded in feminist thought and
+            practice that can be integrated into QGIS, an open-source mapping
+            platform, and cartography more broadly.
+          </p>
+
+          <div className="search-field" role="search">
+            <label className="sr-only" htmlFor="gallery-search">
+              Search icons by tags, geography, or designer
+            </label>
+            <svg className="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+            <input
+              id="gallery-search"
+              className="gallery-search"
+              type="search"
+              placeholder="Search by tags, geography, or designer…"
+              autoComplete="off"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
           </div>
+
+          <div className="grid-toolbar">
+            <p className="format-mode">
+              {format === 'svg' ? 'Showing SVGs' : 'Showing PNGs'}
+            </p>
+            <button
+              type="button"
+              className={
+                format === 'svg' ? 'rainbow-toggle is-svg' : 'rainbow-toggle'
+              }
+              aria-pressed={format === 'svg'}
+              title="Switch between PNG and SVG"
+              aria-label="Switch between PNG and SVG icons"
+              onClick={() =>
+                setFormat((current) => (current === 'png' ? 'svg' : 'png'))
+              }
+            >
+              <span className="sr-only">Toggle PNG / SVG</span>
+            </button>
+          </div>
+
+          <p className="home-gallery__status" aria-live="polite">
+            {status === 'loading' && 'Loading icons…'}
+            {status === 'error' &&
+              'Icons could not be loaded. Is the API running?'}
+            {status === 'ready' &&
+              gallery.count === 0 &&
+              (q
+                ? `No icons match “${q}”.`
+                : 'No published icons yet.')}
+            {status === 'ready' &&
+              gallery.count > 0 &&
+              `Showing ${(page - 1) * PAGE_SIZE + 1}–${
+                (page - 1) * PAGE_SIZE + gallery.icons.length
+              } of ${gallery.count} icons`}
+          </p>
+
+          {gallery.icons.length > 0 && (
+            <ul className="icon-grid">
+              {gallery.icons.map((icon, index) => {
+                const label = icon.primary_tag || icon.unique_id
+                const src =
+                  format === 'svg' && icon.svg_file
+                    ? icon.svg_file
+                    : icon.png_file
+                return (
+                  <li key={icon.unique_id} style={{ '--i': index }}>
+                    <Link
+                      className="icon-card"
+                      to={`/icons/${icon.unique_id}`}
+                      state={{ gallerySearch: location.search }}
+                    >
+                      {src ? (
+                        <img src={src} alt="" loading="lazy" />
+                      ) : (
+                        <span className="icon-card__fallback" aria-hidden="true" />
+                      )}
+                      <span className="icon-card__label">{label}</span>
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+
+          {(gallery.previous || gallery.next) && (
+            <nav className="pager" aria-label="Gallery pages">
+              <button
+                type="button"
+                className="btn"
+                disabled={!gallery.previous}
+                onClick={() => goToPage(page - 1)}
+              >
+                ← Previous
+              </button>
+              <span>
+                Page {page} of {Math.ceil(gallery.count / PAGE_SIZE)}
+              </span>
+              <button
+                type="button"
+                className="btn"
+                disabled={!gallery.next}
+                onClick={() => goToPage(page + 1)}
+              >
+                Next →
+              </button>
+            </nav>
+          )}
         </div>
-        <p className="home-gallery__status" aria-live="polite">
-          {status === 'loading' && 'Loading icons…'}
-          {status === 'error' &&
-            'Icons could not be loaded. Is the API running?'}
-          {status === 'ready' &&
-            gallery.count === 0 &&
-            (q
-              ? `No icons match “${q}”.`
-              : 'No published icons yet.')}
-          {status === 'ready' &&
-            gallery.count > 0 &&
-            `Showing ${(page - 1) * PAGE_SIZE + 1}–${
-              (page - 1) * PAGE_SIZE + gallery.icons.length
-            } of ${gallery.count} icons`}
-        </p>
-        {gallery.icons.length > 0 && (
-          <ul className="icon-grid">
-            {gallery.icons.map((icon) => {
-              const label = icon.primary_tag || icon.unique_id
-              const src =
-                format === 'svg' && icon.svg_file ? icon.svg_file : icon.png_file
-              return (
-                <li key={icon.unique_id}>
-                  <Link
-                    className="icon-card"
-                    to={`/icons/${icon.unique_id}`}
-                    state={{ gallerySearch: location.search }}
-                  >
-                    {src ? (
-                      <img src={src} alt={label} loading="lazy" />
-                    ) : (
-                      <span className="icon-card__fallback">{label}</span>
-                    )}
-                    <span className="icon-card__label">{label}</span>
-                  </Link>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-        {(gallery.previous || gallery.next) && (
-          <nav className="pager" aria-label="Gallery pages">
-            <button
-              type="button"
-              className="btn"
-              disabled={!gallery.previous}
-              onClick={() => goToPage(page - 1)}
-            >
-              ← Previous
-            </button>
-            <span>
-              Page {page} of {Math.ceil(gallery.count / PAGE_SIZE)}
-            </span>
-            <button
-              type="button"
-              className="btn"
-              disabled={!gallery.next}
-              onClick={() => goToPage(page + 1)}
-            >
-              Next →
-            </button>
-          </nav>
-        )}
       </section>
 
       <section className="about wrap" aria-labelledby="about-heading">
