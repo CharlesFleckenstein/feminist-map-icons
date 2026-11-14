@@ -71,9 +71,15 @@ export default function Layout() {
             <NavLink to="/resources" className={navClass}>
               Resources
             </NavLink>
-            <NavLink to="/contribute" className={navClass}>
-              Contribute
-            </NavLink>
+            {token ? (
+              <NavLink to="/contribute" className={navClass}>
+                Contribute
+              </NavLink>
+            ) : (
+              <NavLink to="/sign-in" className={navClass}>
+                Contribute
+              </NavLink>
+            )}
             {token ? (
               <button
                 type="button"
